@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { InMemoryCredentialStore, InMemoryModelsStore, Type, type Context } from "@earendil-works/pi-ai";
 import { discoverAndLoadExtensions, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { catalogResponse, exchangeRate, model, sse, textResponse } from "./fixtures.ts";
+import { exchangeRate, model, sse, storedCatalog, textResponse } from "./fixtures.ts";
 
 const context = {
   systemPrompt: "Answer briefly.",
@@ -25,11 +25,8 @@ function setKey(t: TestContext, value?: string) {
 async function setup(t: TestContext) {
   const agentDir = await mkdtemp(resolve(tmpdir(), "pi-kenari-test-"));
   t.after(() => rm(agentDir, { recursive: true, force: true }));
-  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url === "https://kenari.id/v1/models") return catalogResponse();
-    if (url === "https://kenari.id/api/public/pricing") return Response.json(exchangeRate);
-    throw new Error(`Unexpected network request: ${url}`);
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Cached startup must not send a network request");
   });
   const loaded = await discoverAndLoadExtensions([resolve("index.ts")], process.cwd(), agentDir);
   assert.deepEqual(loaded.errors, []);
@@ -39,8 +36,10 @@ async function setup(t: TestContext) {
   assert.equal(registration.name, "kenari");
   assert.equal(registration.config.apiKey, "$KENARI_API_KEY");
   assert.equal(registration.config.baseUrl, "https://kenari.id/v1");
+  const modelsStore = new InMemoryModelsStore();
+  await modelsStore.write("kenari", storedCatalog());
   const runtime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStore: new InMemoryModelsStore(),
+    credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStore,
   });
   runtime.registerProvider(registration.name, registration.config);
   const refreshed = await runtime.refresh({ allowNetwork: false, providers: ["kenari"] });
@@ -180,12 +179,12 @@ test("refresh replaces removed models and retains the previous list on failure",
   const { runtime } = await setup(t);
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) =>
     Response.json(String(input).endsWith("/models") ? { data: [model({ id: "new-model" })] } : exchangeRate));
-  const result = await runtime.refresh({ providers: ["kenari"] });
+  const result = await runtime.refresh({ providers: ["kenari"], force: true });
   assert.equal(result.errors.size, 0);
   assert.deepEqual(runtime.getModels("kenari").map((entry) => entry.id), ["new-model"]);
   t.mock.restoreAll();
   t.mock.method(globalThis, "fetch", async () => new Response("Unavailable", { status: 503 }));
-  const failed = await runtime.refresh({ providers: ["kenari"] });
+  const failed = await runtime.refresh({ providers: ["kenari"], force: true });
   assert.equal(failed.errors.size, 1);
   assert.deepEqual(runtime.getModels("kenari").map((entry) => entry.id), ["new-model"]);
 });

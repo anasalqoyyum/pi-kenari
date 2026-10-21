@@ -1,17 +1,48 @@
+import { isModelType } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BASE_URL, discoverModels } from "./src/catalog.ts";
 
-export default async function kenari(pi: ExtensionAPI): Promise<void> {
-  let models = await discoverModels();
+const CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+export default function kenari(pi: ExtensionAPI): void {
   pi.registerProvider("kenari", {
     name: "Kenari",
     baseUrl: BASE_URL,
     api: "openai-completions",
     apiKey: "$KENARI_API_KEY",
-    models,
-    refreshModels: async ({ allowNetwork, signal }) => {
-      if (allowNetwork) models = await discoverModels(signal);
-      return models;
+    models: [],
+    refreshModels: async ({ allowNetwork, force, signal, stored, publish }) => {
+      const cached = (stored?.models ?? [])
+        .filter((model) => isModelType(model, "chat"))
+        .filter((model) => model.provider === "kenari" && model.api === "openai-completions" && model.baseUrl === BASE_URL);
+      if (!allowNetwork) return cached;
+
+      const age = typeof stored?.checkedAt === "number" ? Date.now() - stored.checkedAt : Infinity;
+      if (!force && cached.length > 0 && age >= 0 && age < CATALOG_REFRESH_INTERVAL_MS) return cached;
+
+      const models = await discoverModels(signal);
+      const published = await publish({
+        persist: {
+          models: models.map((model) => ({ ...model, provider: "kenari", api: "openai-completions", baseUrl: BASE_URL })),
+          checkedAt: Date.now(),
+        },
+      });
+      return published ? models : cached;
+    },
+  });
+
+  pi.registerCommand("kenari-refresh", {
+    description: "Refresh Kenari's model catalog now",
+    handler: async (_args, ctx) => {
+      const result = await ctx.modelRegistry.refresh({ providers: ["kenari"], force: true });
+      const error = result.errors.get("kenari");
+      if (error) ctx.ui.notify(error.message, "error");
+      else if (result.aborted) ctx.ui.notify("Kenari model refresh cancelled.", "warning");
+      else if (!ctx.modelRegistry.getAvailable().some((model) => model.provider === "kenari")) {
+        ctx.ui.notify("No Kenari models available. Configure KENARI_API_KEY and refresh online to save a catalog.", "warning");
+      } else if (process.env.PI_OFFLINE !== undefined) {
+        ctx.ui.notify("Offline mode: using the saved Kenari catalog. No network refresh was made.", "info");
+      } else ctx.ui.notify("Kenari model catalog refreshed. Use /model to select a model.", "info");
     },
   });
 }

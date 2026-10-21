@@ -1,4 +1,15 @@
+import { parseCatalog } from "../src/catalog.ts";
+
 export const exchangeRate = { usd_idr_rate: 16_000 };
+
+export function storedCatalog(checkedAt = Date.now()) {
+  return {
+    checkedAt,
+    models: parseCatalog({ data: [model()] }, exchangeRate).map((entry) => ({
+      ...entry, provider: "kenari", api: "openai-completions", baseUrl: "https://kenari.id/v1",
+    })),
+  };
+}
 
 export function model(overrides: Record<string, unknown> = {}) {
   return {

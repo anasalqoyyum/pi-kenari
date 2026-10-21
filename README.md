@@ -22,13 +22,15 @@ Create an API key in the [Kenari dashboard](https://kenari.id), then export it i
 export KENARI_API_KEY='kn-your-key'
 ```
 
-Start Pi with a Kenari model:
+On first use, start Pi without selecting a Kenari model on the command line. Pi discovers models in the background after the UI opens. Run `/model` to choose one, or `/kenari-refresh` to explicitly fetch the catalog and wait for discovery.
+
+Once a catalog has been saved, you can start Pi directly with a Kenari model:
 
 ```bash
 pi --provider kenari --model 'hy3:free'
 ```
 
-Or start Pi and choose a Kenari model with `/model`. To list the discovered models:
+To list the saved models:
 
 ```bash
 pi --list-models kenari
@@ -40,16 +42,15 @@ Never commit your key. Export it again in a new shell, or load it through your o
 
 ## Model discovery
 
-On each load, including `/reload`, the extension reads these public endpoints with a 10-second timeout:
+Pi loads the saved catalog at startup and on `/reload` without making network requests. With Kenari credentials configured, it refreshes missing or outdated catalogs in the background, at most once every four hours after a successful refresh.
 
-- `https://kenari.id/v1/models`
-- `https://kenari.id/api/public/pricing`
+Run `/kenari-refresh` to refresh immediately. Discovery times out after 10 seconds, and failed or cancelled refreshes keep the last good catalog. `--offline` or `PI_OFFLINE=1` uses only saved models, even with `/kenari-refresh`.
 
-It registers entries whose `endpoints` include `chat`, excluding models explicitly marked `tool_call: false` and models past their retirement date. Media-generation models and entries without chat metadata are not registered. Free variants retain their `:free` suffix. The provider also supplies a refresh callback for Pi's model-catalog refresh.
+On first use, save a catalog with `/kenari-refresh` in an interactive session before selecting Kenari models on the command line or using `--list-models` or noninteractive mode.
 
-Network access is required at startup. Failed discovery produces an extension-loading error rather than a stale or hard-coded model list. There is no offline catalog cache. A discovered model may still require a subscription or sufficient balance, and restricted keys may not be allowed to use every listed model.
+The catalog excludes non-chat models, models explicitly marked as lacking tool support, and models retired at discovery time. Free variants keep their `:free` suffix. Saved metadata may become outdated, and listed models may still require a subscription, balance, or permission from your API key.
 
-Context windows, output limits, image input, and reasoning levels come from the catalog. When Kenari omits limits, the extension uses a 128,000-token context window and an 8,192-token output limit. An advertised input limit further caps Pi's context window, and the output limit never exceeds that window. You can override these defaults per model in `~/.pi/agent/models.json`:
+Model capabilities and token limits come from the catalog. Missing limits default to a 128,000-token context window and an 8,192-token output limit. An advertised input limit can reduce the context window, and output never exceeds that window. Override limits per model in `~/.pi/agent/models.json`:
 
 ```json
 {
@@ -81,8 +82,10 @@ pnpm test
 Try a local checkout without changing your Pi settings:
 
 ```bash
-pi -e ./index.ts --provider kenari --model 'hy3:free'
+pi -e ./index.ts
 ```
+
+Run `/kenari-refresh`, then choose a model with `/model`.
 
 Or install the local package for future sessions:
 
@@ -90,7 +93,7 @@ Or install the local package for future sessions:
 pi install /absolute/path/to/pi-kenari
 ```
 
-Tests use simulated catalog and chat responses. They do not need an API key or spend Kenari credits. A live authenticated chat request requires your own key.
+Tests use simulated catalog and chat responses. They do not need an API key or spend Kenari credits. Startup tests exercise Pi's actual extension loader, model runtime, and file-backed catalog store. A live authenticated chat request requires your own key.
 
 ## References
 
