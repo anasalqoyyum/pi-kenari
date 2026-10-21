@@ -1,6 +1,7 @@
-import { isModelType } from "@earendil-works/pi-ai";
+import type { AnyModel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BASE_URL, discoverModels } from "./src/catalog.ts";
+import { SYSTEM_ONE_API, classify } from "./src/system-one.ts";
 
 const CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
@@ -11,10 +12,13 @@ export default function kenari(pi: ExtensionAPI): void {
     api: "openai-completions",
     apiKey: "$KENARI_API_KEY",
     models: [],
+    classifiers: { [SYSTEM_ONE_API]: { classify } },
     refreshModels: async ({ allowNetwork, force, signal, stored, publish }) => {
-      const cached = (stored?.models ?? [])
-        .filter((model) => isModelType(model, "chat"))
-        .filter((model) => model.provider === "kenari" && model.api === "openai-completions" && model.baseUrl === BASE_URL);
+      const cached = (stored?.models ?? []).filter(
+        (model): model is AnyModel =>
+          model.provider === "kenari" && model.baseUrl === BASE_URL &&
+          (model.api === "openai-completions" || model.api === SYSTEM_ONE_API),
+      );
       if (!allowNetwork) return cached;
 
       const age = typeof stored?.checkedAt === "number" ? Date.now() - stored.checkedAt : Infinity;
@@ -23,7 +27,7 @@ export default function kenari(pi: ExtensionAPI): void {
       const models = await discoverModels(signal);
       const published = await publish({
         persist: {
-          models: models.map((model) => ({ ...model, provider: "kenari", api: "openai-completions", baseUrl: BASE_URL })),
+          models: models.map((model) => ({ ...model, provider: "kenari", baseUrl: BASE_URL })),
           checkedAt: Date.now(),
         },
       });

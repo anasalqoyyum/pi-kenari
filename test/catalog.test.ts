@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { discoverModels, parseCatalog } from "../src/catalog.ts";
-import { exchangeRate, model } from "./fixtures.ts";
+import { discoverModels, parseCatalog, parseSystemOneCatalog } from "../src/catalog.ts";
+import { exchangeRate, model, systemOneModel } from "./fixtures.ts";
 
 function parse(overrides: Record<string, unknown> = {}) {
   const [result] = parseCatalog({ data: [model(overrides)] }, exchangeRate);
@@ -86,10 +86,16 @@ test("discovery sends no credentials to public endpoints and propagates cancella
     requests.push(url);
     assert.equal(new Headers(init?.headers).get("Authorization"), null);
     assert.ok(init?.signal);
+    if (url.endsWith("?modality=systemone")) return Response.json({ data: [systemOneModel()] });
     return Response.json(url.endsWith("/models") ? { data: [model()] } : exchangeRate);
   });
-  assert.equal((await discoverModels()).length, 1);
-  assert.deepEqual(requests.sort(), ["https://kenari.id/api/public/pricing", "https://kenari.id/v1/models"]);
+  const discovered = await discoverModels();
+  assert.deepEqual(discovered.map((entry) => entry.type ?? "chat"), ["chat", "classifier"]);
+  assert.deepEqual(requests.sort(), [
+    "https://kenari.id/api/public/pricing",
+    "https://kenari.id/v1/models",
+    "https://kenari.id/v1/models?modality=systemone",
+  ]);
   t.mock.restoreAll();
 
   const controller = new AbortController();
@@ -104,4 +110,41 @@ test("discovery sends no credentials to public endpoints and propagates cancella
 test("discovery reports HTTP failures without including the response body", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response("private upstream detail", { status: 503 }));
   await assert.rejects(discoverModels(), /Kenari catalog request failed: HTTP 503/);
+});
+
+test("maps System One models as classifiers with text-only or image input", () => {
+  const models = parseSystemOneCatalog({ data: [
+    systemOneModel(),
+    systemOneModel({ id: "jev-1-14", name: "Jev 1.14", modalities: { input: ["text", "image"], output: [] } }),
+    systemOneModel({ id: "clef:free", name: "Clef", modalities: { input: ["text", "image"], output: [] } }),
+  ] }, exchangeRate);
+  assert.deepEqual(models.map((entry) => entry.id), ["jev-1-13:free", "jev-1-14", "clef:free"]);
+  assert.equal(models[0]?.type, "classifier");
+  assert.equal(models[0]?.api, "kenari-system-one");
+  assert.deepEqual(models[0]?.input, ["text"]);
+  assert.deepEqual(models[1]?.input, ["text", "image"]);
+  assert.deepEqual(models[0]?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  assert.equal(models[0]?.contextWindow, 64_000);
+});
+
+test("prices System One models from input tokens and keeps only current ones", () => {
+  const models = parseSystemOneCatalog({ data: [
+    systemOneModel({ id: "paid", pricing: { ...systemOneModel().pricing, input: 850_000_000, free: false } }),
+    systemOneModel({ id: "expired", sunset_at: 1 }),
+    systemOneModel({ id: "chat-only", endpoints: ["chat"] }),
+  ] }, exchangeRate);
+  assert.deepEqual(models.map((entry) => entry.id), ["paid"]);
+  assert.ok(Math.abs((models[0]?.cost.input ?? 0) - 0.053125) < 1e-12);
+  assert.equal(models[0]?.cost.output, 0);
+});
+
+test("System One discovery rejects malformed catalogs and accepts an empty list", () => {
+  assert.deepEqual(parseSystemOneCatalog({ data: [] }, exchangeRate), []);
+  for (const value of [null, {}, { data: [{}] }, { data: [systemOneModel({ endpoints: "systemone" })] }]) {
+    assert.throws(() => parseSystemOneCatalog(value, exchangeRate), /invalid System One catalog/);
+  }
+  assert.throws(
+    () => parseSystemOneCatalog({ data: [systemOneModel()] }, { usd_idr_rate: 0 }),
+    /invalid USD\/IDR/,
+  );
 });

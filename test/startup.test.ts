@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { InMemoryCredentialStore, InMemoryModelsStore, type ModelsStore } from "@earendil-works/pi-ai";
 import { discoverAndLoadExtensions, ExtensionRunner, ModelRegistry, ModelRuntime, resolveCliModel, SessionManager } from "@earendil-works/pi-coding-agent";
-import { catalogResponse, exchangeRate, model, storedCatalog } from "./fixtures.ts";
+import { catalogResponse, exchangeRate, model, storedCatalog, systemOneCatalogResponse } from "./fixtures.ts";
 
 const refreshInterval = 4 * 60 * 60 * 1000;
 
@@ -30,15 +30,18 @@ async function setup(t: TestContext, store: ModelsStore | "disk" = new InMemoryM
   return { runtime, agentDir, loaded, credentials };
 }
 
+/** A discovery response for one of Kenari's three public catalog endpoints. */
+function catalogBody(url: string, id?: string): Response {
+  if (url === "https://kenari.id/v1/models") return id ? Response.json({ data: [model({ id })] }) : catalogResponse();
+  if (url === "https://kenari.id/v1/models?modality=systemone") return systemOneCatalogResponse();
+  assert.equal(url, "https://kenari.id/api/public/pricing");
+  return Response.json(exchangeRate);
+}
+
 function mockCatalog(t: TestContext, id?: string) {
   return t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     assert.equal(new Headers(init?.headers).get("Authorization"), null);
-    const url = String(input);
-    if (url === "https://kenari.id/v1/models") {
-      return id ? Response.json({ data: [model({ id })] }) : catalogResponse();
-    }
-    assert.equal(url, "https://kenari.id/api/public/pricing");
-    return Response.json(exchangeRate);
+    return catalogBody(String(input), id);
   });
 }
 
@@ -88,13 +91,13 @@ test("a stale catalog refreshes once online and saves the new catalog and freshn
   const before = Date.now();
   const result = await runtime.refresh({ providers: ["kenari"], allowNetwork: true });
   assert.equal(result.errors.size, 0);
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
   assert.deepEqual(runtime.getModels("kenari").map((entry) => entry.id), ["new-model"]);
   const saved = await store.read("kenari");
   assert.ok(saved?.checkedAt && saved.checkedAt >= before && saved.checkedAt <= Date.now());
   assert.equal(saved.models[0]?.provider, "kenari");
   await runtime.refresh({ providers: ["kenari"], allowNetwork: true });
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
 });
 
 test("the catalog becomes stale at exactly four hours", async (t) => {
@@ -108,7 +111,7 @@ test("the catalog becomes stale at exactly four hours", async (t) => {
   assert.equal(fetch.mock.callCount(), 0);
   now++;
   await runtime.refresh({ providers: ["kenari"], allowNetwork: true });
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
 });
 
 test("missing, invalid and future timestamps do not suppress discovery", async (t) => {
@@ -122,7 +125,7 @@ test("missing, invalid and future timestamps do not suppress discovery", async (
     const result = await runtime.refresh({ providers: ["kenari"], allowNetwork: true });
     assert.equal(result.errors.size, 0);
   }
-  assert.equal(fetch.mock.callCount(), 8);
+  assert.equal(fetch.mock.callCount(), 12);
 });
 
 test("force bypasses freshness but never bypasses allowNetwork false", async (t) => {
@@ -133,7 +136,7 @@ test("force bypasses freshness but never bypasses allowNetwork false", async (t)
   await runtime.refresh({ providers: ["kenari"], force: true, allowNetwork: false });
   assert.equal(fetch.mock.callCount(), 0);
   await runtime.refresh({ providers: ["kenari"], force: true, allowNetwork: true });
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
   assert.equal(runtime.getModels("kenari")[0]?.id, "forced-model");
 });
 
@@ -241,11 +244,11 @@ test("superseded discovery cannot overwrite a newer catalog even if its fetch ig
     const url = String(input);
     if (count <= 2) {
       return new Promise<Response>((resolve) => {
-        releases.push(() => resolve(url.endsWith("/models") ? Response.json({ data: [model({ id: "old-model" })] }) : Response.json(exchangeRate)));
+        releases.push(() => resolve(catalogBody(url, "old-model")));
         if (releases.length === 2) started();
       });
     }
-    return url.endsWith("/models") ? Response.json({ data: [model({ id: "new-model" })] }) : Response.json(exchangeRate);
+    return catalogBody(url, "new-model");
   });
   const older = runtime.refresh({ providers: ["kenari"], allowNetwork: true, force: true });
   await pendingRequests;
@@ -261,11 +264,11 @@ test("Pi's file-backed cache survives a new runtime and contains no API key", as
   const fetch = mockCatalog(t);
   const first = await setup(t, "disk");
   await first.runtime.refresh({ providers: ["kenari"], allowNetwork: true });
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
   const second = await setup(t, "disk", first.agentDir);
   assert.equal(second.runtime.getModels("kenari")[0]?.id, "step-3-7-flash");
   await second.runtime.refresh({ providers: ["kenari"], allowNetwork: true });
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
   const saved = await readFile(resolve(first.agentDir, "models-store.json"), "utf8");
   assert.doesNotMatch(saved, /kn-catalog-test|Authorization|apiKey/);
 });
@@ -282,7 +285,7 @@ test("empty and unrelated cached catalogs cannot suppress discovery", async (t) 
     assert.equal(result.errors.size, 0);
     assert.equal(runtime.getModels("kenari").length, 1);
   }
-  assert.equal(fetch.mock.callCount(), 6);
+  assert.equal(fetch.mock.callCount(), 9);
 });
 
 test("/kenari-refresh initializes a cold catalog and bypasses freshness on subsequent requests", async (t) => {
@@ -293,9 +296,9 @@ test("/kenari-refresh initializes a cold catalog and bypasses freshness on subse
   const command = runner.getCommand("kenari-refresh");
   assert.ok(command);
   await command.handler("", runner.createCommandContext());
-  assert.equal(fetch.mock.callCount(), 2);
+  assert.equal(fetch.mock.callCount(), 3);
   assert.equal(runtime.getModels("kenari").length, 1);
   await command.handler("", runner.createCommandContext());
-  assert.equal(fetch.mock.callCount(), 4);
+  assert.equal(fetch.mock.callCount(), 6);
   assert.match(String(notify.mock.calls.at(-1)?.arguments[0]), /catalog refreshed/);
 });

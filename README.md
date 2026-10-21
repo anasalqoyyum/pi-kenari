@@ -1,6 +1,6 @@
 # pi-kenari
 
-[Kenari](https://kenari.id/en/docs) provider extension for [Pi](https://pi.dev). Loads tool-capable chat models from Kenari's live catalog and uses Pi's built-in OpenAI Chat Completions implementation for text, reasoning, tool calls, and image input on vision models.
+[Kenari](https://kenari.id/en/docs) provider extension for [Pi](https://pi.dev). Loads tool-capable chat models from Kenari's live catalog and uses Pi's built-in OpenAI Chat Completions implementation for text, reasoning, tool calls, and image input on vision models. It also registers Kenari's System One decision models as Pi classifier models for `codemode`'s `models.classify()` and classifier-driven extensions.
 
 Tested with `@earendil-works/pi-coding-agent` 1.3.0 and Node.js 22.19 or newer.
 
@@ -50,6 +50,8 @@ On first use, save a catalog with `/kenari-refresh` in an interactive session be
 
 The catalog excludes non-chat models, models explicitly marked as lacking tool support, and models retired at discovery time. Free variants keep their `:free` suffix. Saved metadata may become outdated, and listed models may still require a subscription, balance, or permission from your API key.
 
+Kenari's catalog also lists image, video, speech, transcription, music, rerank, moderation, and embedding models. This extension registers none of them: Pi only streams chat models, and the extension does not implement those endpoints. Chat models that accept `file`, `pdf`, `video`, or `audio` input are registered as text and image models, because Pi's chat content types carry no other input kind.
+
 Model capabilities and token limits come from the catalog. Missing limits default to a 128,000-token context window and an 8,192-token output limit. An advertised input limit can reduce the context window, and output never exceeds that window. Override limits per model in `~/.pi/agent/models.json`:
 
 ```json
@@ -66,6 +68,31 @@ Model capabilities and token limits come from the catalog. Missing limits defaul
   }
 }
 ```
+
+## Classifiers
+
+System One models (`jev-1-13`, `jev-1-13:free`, `jev-1-14`, `clef:free`, `clef-flash:free`) answer typed questions about JSON state and images instead of chatting. Kenari lists them only under `?modality=systemone`, and discovery registers them as Pi classifier models.
+
+Classifier models never appear in `/model`. Reach them from `codemode`, which is off unless `"defaultTools": ["+codemode"]` is set in settings:
+
+```js
+const jev = await models.getModelOfType("classifier", "kenari", "jev-1-13:free");
+const result = await models.classify(jev, {
+  state: { message: "The change works, thanks!" },
+  questions: {
+    approved: { type: "bool", instructions: "Does the user approve?", criteria: { true: "approval", false: "no approval" } },
+  },
+});
+return result.answers;
+```
+
+Extensions reach the same models through `ctx.modelRegistry.classify()`. To make Kenari the default classifier for the `classify` tool or a Jev-routing extension, name it in `~/.pi/agent/settings.json`:
+
+```json
+{ "classifier": { "model": "kenari/jev-1-13:free" } }
+```
+
+`jev-1-14` and the Clef models also read images passed in `images`; `jev-1-13` and `jev-1-13:free` reject them. Kenari bills System One input tokens only, so reported cost uses the input rate and counts output tokens at zero. Kenari publishes no token limit for these models, so the extension assumes a 64,000-token context window.
 
 ## Cost display
 
@@ -93,7 +120,7 @@ Or install the local package for future sessions:
 pi install /absolute/path/to/pi-kenari
 ```
 
-Tests use simulated catalog and chat responses. They do not need an API key or spend Kenari credits. Startup tests exercise Pi's actual extension loader, model runtime, and file-backed catalog store. A live authenticated chat request requires your own key.
+Tests use simulated catalog and chat responses. They do not need an API key or spend Kenari credits. Startup tests exercise Pi's actual extension loader, model runtime, and file-backed catalog store. A live authenticated chat or classifier request requires your own key.
 
 ## References
 
@@ -103,3 +130,4 @@ Tests use simulated catalog and chat responses. They do not need an API key or s
 - [Function calling](https://kenari.id/en/docs/function-calling)
 - [Reasoning](https://kenari.id/en/docs/reasoning)
 - [Streaming](https://kenari.id/en/docs/streaming)
+- [System One](https://kenari.id/en/docs/systemone)

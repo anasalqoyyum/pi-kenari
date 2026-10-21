@@ -5,7 +5,8 @@ import { resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { InMemoryCredentialStore, InMemoryModelsStore, Type, type Context } from "@earendil-works/pi-ai";
 import { discoverAndLoadExtensions, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { exchangeRate, model, sse, storedCatalog, textResponse } from "./fixtures.ts";
+import { parseSystemOneCatalog } from "../src/catalog.ts";
+import { exchangeRate, model, sse, storedCatalog, systemOneModel, systemOneResponse, textResponse } from "./fixtures.ts";
 
 const context = {
   systemPrompt: "Answer briefly.",
@@ -178,7 +179,9 @@ test("refresh replaces removed models and retains the previous list on failure",
   setKey(t, "kn-refresh-test");
   const { runtime } = await setup(t);
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request) =>
-    Response.json(String(input).endsWith("/models") ? { data: [model({ id: "new-model" })] } : exchangeRate));
+    Response.json(String(input).includes("modality=systemone")
+      ? { data: [] }
+      : String(input).endsWith("/models") ? { data: [model({ id: "new-model" })] } : exchangeRate));
   const result = await runtime.refresh({ providers: ["kenari"], force: true });
   assert.equal(result.errors.size, 0);
   assert.deepEqual(runtime.getModels("kenari").map((entry) => entry.id), ["new-model"]);
@@ -208,4 +211,224 @@ test("abort, malformed streams, context overflow and in-stream errors do not rep
     assert.ok(result.errorMessage);
     t.mock.restoreAll();
   }
+});
+
+test("System One classifier models are available through Pi's classifier runtime", async (t) => {
+  setKey(t, "kn-classifier-test");
+  const { runtime } = await setup(t);
+  const jev = runtime.getModelOfType("classifier", "kenari", "jev-1-13:free");
+  assert.ok(jev);
+  assert.equal(jev.api, "kenari-system-one");
+  assert.deepEqual(jev.input, ["text"]);
+  assert.deepEqual((await runtime.getAvailableOfType("classifier", "kenari")).map((model) => model.id), ["jev-1-13:free", "clef:free"]);
+
+  let payload: unknown;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://kenari.id/v1/systemone");
+    assert.equal(request.headers.get("Authorization"), "Bearer kn-classifier-test");
+    payload = await request.json();
+    return systemOneResponse();
+  });
+
+  const result = await runtime.classify(jev, {
+    state: { message: "The change works, thanks!" },
+    questions: {
+      approved: { type: "bool", instructions: "Does the user approve?", criteria: { true: "approval", false: "no approval" } },
+      tone: { type: "choice", instructions: "What tone?", criteria: { happy: "positive", angry: "negative" } },
+      severity: { type: "score", instructions: "How severe?", criteria: ["none", "minor", "major", "critical"] },
+    },
+  });
+
+  assert.deepEqual(payload, {
+    model: "jev-1-13:free",
+    state: { message: "The change works, thanks!" },
+    questions: {
+      approved: { type: "noul", instructions: "Does the user approve?", criteria: { true: "approval", false: "no approval" } },
+      tone: { type: "choice", instructions: "What tone?", criteria: { happy: "positive", angry: "negative" } },
+      severity: { type: "score", instructions: "How severe?", criteria: ["none", "minor", "major", "critical"] },
+    },
+  });
+  assert.equal(result.stopReason, "stop");
+  assert.deepEqual(result.answers, {
+    approved: { type: "bool", probability: 0.97 },
+    tone: { type: "choice", choice: "happy", confidence: 1, probabilities: { happy: 1, angry: 0 } },
+    severity: { type: "score", score: 2.96, confidence: 0.96 },
+  });
+  assert.equal(result.usage?.input, 82);
+  assert.equal(result.usage?.output, 48);
+  assert.equal(result.usage?.totalTokens, 130);
+  assert.equal(result.usage?.cost.total, 0);
+});
+
+test("classifier failures and image input are reported without throwing", async (t) => {
+  setKey(t, "kn-classifier-errors");
+  const { runtime } = await setup(t);
+  const jev = runtime.getModelOfType("classifier", "kenari", "jev-1-13:free");
+  assert.ok(jev);
+
+  const rejected = await runtime.classify(jev, {
+    state: { message: "hi" },
+    images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+    questions: { q: { type: "bool", instructions: "Is this fine?", criteria: { true: "yes", false: "no" } } },
+  });
+  assert.equal(rejected.stopReason, "error");
+  assert.match(rejected.errorMessage ?? "", /does not accept image input/);
+
+  t.mock.method(globalThis, "fetch", async () => Response.json(
+    { error: { code: "insufficient_balance", message: "insufficient balance", type: "insufficient_balance" } },
+    { status: 402 },
+  ));
+  const failed = await runtime.classify(jev, {
+    state: { message: "hi" },
+    questions: { q: { type: "bool", instructions: "Is this fine?", criteria: { true: "yes", false: "no" } } },
+  });
+  assert.equal(failed.stopReason, "error");
+  assert.match(failed.errorMessage ?? "", /HTTP 402.*insufficient balance/);
+});
+
+test("classifier requests carry images as assets and report payload and response hooks", async (t) => {
+  setKey(t, "kn-classifier-images");
+  const { runtime } = await setup(t);
+  const clef = runtime.getModelOfType("classifier", "kenari", "clef:free");
+  assert.ok(clef);
+  assert.deepEqual(clef.input, ["text", "image"]);
+
+  const sent: unknown[] = [];
+  let status: number | undefined;
+  let responseHeaders: Record<string, string> | undefined;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    sent.push(await request.json());
+    return Response.json({
+      model: "clef:free",
+      answers: { color: { type: "choice", choice: "red", confidence: 0.99, probabilities: { red: 0.99, blue: 0.01 } } },
+      usage: { input_tokens: 130, output_tokens: 0 },
+    }, { headers: { "x-request-id": "req-1" } });
+  });
+
+  const result = await runtime.classify(clef, {
+    state: { note: "the attached image" },
+    images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+    questions: { color: { type: "choice", instructions: "Dominant color?", criteria: { red: "red", blue: "blue" } } },
+  }, {
+    onResponse: (response) => { status = response.status; responseHeaders = response.headers; },
+  });
+
+  assert.deepEqual(sent, [{
+    model: "clef:free",
+    state: { note: "the attached image" },
+    questions: { color: { type: "choice", instructions: "Dominant color?", criteria: { red: "red", blue: "blue" } } },
+    assets: { image_1: { type: "image", format: "png", data_base64: "aGVsbG8=" } },
+  }]);
+  assert.equal(status, 200);
+  assert.equal(responseHeaders?.["x-request-id"], "req-1");
+  assert.equal(result.stopReason, "stop");
+  assert.deepEqual(result.answers.color, {
+    type: "choice", choice: "red", confidence: 0.99, probabilities: { red: 0.99, blue: 0.01 },
+  });
+});
+
+test("onPayload replaces the classifier body and onResponse runs before the body is read", async (t) => {
+  setKey(t, "kn-classifier-hooks");
+  const { runtime } = await setup(t);
+  const jev = runtime.getModelOfType("classifier", "kenari", "jev-1-13:free");
+  assert.ok(jev);
+
+  const sent: unknown[] = [];
+  const order: string[] = [];
+  let reads = 0;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    sent.push(await request.json());
+    const response = Response.json({ model: "jev-1-13:free", answers: {
+      q: { type: "noul", noul: 0.8 },
+    }, usage: { input_tokens: 10, output_tokens: 5 } });
+    Object.defineProperty(response, "text", {
+      value: async () => { reads++; order.push("body"); return JSON.stringify(await response.clone().json()); },
+    });
+    return response;
+  });
+
+  const questions = { q: { type: "bool" as const, instructions: "Is it fine?", criteria: { true: "yes", false: "no" } } };
+  const replaced = await runtime.classify(jev, { state: { a: 1 }, questions }, {
+    onPayload: async () => ({ model: "jev-1-13:free", state: { replaced: true }, questions }),
+    onResponse: () => { order.push("response"); },
+  });
+  assert.equal(replaced.stopReason, "stop");
+  // The hook sees and owns the wire body, so a replacement is sent verbatim, `bool` included.
+  assert.deepEqual(sent[0], { model: "jev-1-13:free", state: { replaced: true }, questions });
+  assert.deepEqual(order, ["response", "body"]);
+  assert.equal(reads, 1);
+
+  const unchanged = await runtime.classify(jev, { state: { b: 2 }, questions });
+  assert.deepEqual(sent[1], { model: "jev-1-13:free", state: { b: 2 }, questions: {
+    q: { type: "noul", instructions: "Is it fine?", criteria: { true: "yes", false: "no" } },
+  } });
+  assert.equal(unchanged.stopReason, "stop");
+});
+
+test("caller headers override or suppress classifier request defaults", async (t) => {
+  setKey(t, "kn-classifier-headers");
+  const { runtime } = await setup(t);
+  const jev = runtime.getModelOfType("classifier", "kenari", "jev-1-13:free");
+  assert.ok(jev);
+
+  const seen: Headers[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    seen.push(new Request(input, init).headers);
+    return Response.json({ model: "jev-1-13:free", answers: { q: { type: "noul", noul: 0.8 } } });
+  });
+  const questions = { q: { type: "bool" as const, instructions: "Is it fine?", criteria: { true: "yes", false: "no" } } };
+
+  await runtime.classify(jev, { state: {}, questions }, {
+    headers: { Authorization: "Bearer override", "X-Trace": "abc", "Content-Type": null },
+  });
+  assert.equal(seen[0]?.get("authorization"), "Bearer override");
+  assert.equal(seen[0]?.get("x-trace"), "abc");
+  // `null` suppresses the JSON default; fetch then applies its own body content type.
+  assert.doesNotMatch(seen[0]?.get("content-type") ?? "", /application\/json/);
+
+  await runtime.classify(jev, { state: {}, questions });
+  assert.equal(seen[1]?.get("authorization"), "Bearer kn-classifier-headers");
+  assert.equal(seen[1]?.get("content-type"), "application/json");
+});
+
+test("a paid classifier prices reported tokens at the input rate only", async (t) => {
+  setKey(t, "kn-classifier-cost");
+  // Kenari prices jev-1-13 at 850,000,000 micro-IDR per million input tokens, which is Rp 850 per
+  // million: $0.053125 at the 16,000 IDR/USD fixture rate. System One bills input tokens only.
+  const store = new InMemoryModelsStore();
+  await store.write("kenari", {
+    checkedAt: Date.now(),
+    models: parseSystemOneCatalog({ data: [systemOneModel({
+      id: "jev-1-13",
+      name: "Jev 1.13",
+      pricing: { ...systemOneModel().pricing, input: 850_000_000, free: false },
+    })] }, exchangeRate).map((entry) => ({ ...entry, provider: "kenari", baseUrl: "https://kenari.id/v1" })),
+  });
+  const paid = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStore: store, refreshOnCreate: false,
+  });
+  const loaded = await discoverAndLoadExtensions([resolve("index.ts")], process.cwd(), await mkdtemp(resolve(tmpdir(), "pi-kenari-cost-")));
+  paid.registerProvider(loaded.runtime.pendingProviderRegistrations[0]!.name, loaded.runtime.pendingProviderRegistrations[0]!.config);
+  await paid.refresh({ providers: ["kenari"], allowNetwork: false });
+  const jev = paid.getModelOfType("classifier", "kenari", "jev-1-13");
+  assert.ok(jev);
+  assert.ok(Math.abs(jev.cost.input - 0.053125) < 1e-12);
+
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    model: "jev-1.13.0",
+    answers: { q: { type: "noul", noul: 0.9 } },
+    usage: { input_tokens: 1_000_000, output_tokens: 500_000 },
+  }));
+  const result = await paid.classify(jev, {
+    state: {}, questions: { q: { type: "bool", instructions: "Fine?", criteria: { true: "yes", false: "no" } } },
+  });
+  assert.equal(result.stopReason, "stop");
+  assert.equal(result.usage?.input, 1_000_000);
+  assert.equal(result.usage?.output, 500_000);
+  assert.ok(Math.abs((result.usage?.cost.input ?? 0) - 0.053125) < 1e-12);
+  assert.equal(result.usage?.cost.output, 0);
+  assert.ok(Math.abs((result.usage?.cost.total ?? 0) - 0.053125) < 1e-12);
 });

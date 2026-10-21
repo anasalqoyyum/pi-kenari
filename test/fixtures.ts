@@ -1,13 +1,17 @@
-import { parseCatalog } from "../src/catalog.ts";
+import { parseCatalog, parseSystemOneCatalog } from "../src/catalog.ts";
 
 export const exchangeRate = { usd_idr_rate: 16_000 };
 
 export function storedCatalog(checkedAt = Date.now()) {
   return {
     checkedAt,
-    models: parseCatalog({ data: [model()] }, exchangeRate).map((entry) => ({
-      ...entry, provider: "kenari", api: "openai-completions", baseUrl: "https://kenari.id/v1",
-    })),
+    models: [
+      ...parseCatalog({ data: [model()] }, exchangeRate),
+      ...parseSystemOneCatalog({ data: [
+        systemOneModel(),
+        systemOneModel({ id: "clef:free", name: "Clef", modalities: { input: ["text", "image"], output: [] } }),
+      ] }, exchangeRate),
+    ].map((entry) => ({ ...entry, provider: "kenari", baseUrl: "https://kenari.id/v1" })),
   };
 }
 
@@ -37,8 +41,41 @@ export function model(overrides: Record<string, unknown> = {}) {
   };
 }
 
+export function systemOneModel(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "jev-1-13:free",
+    name: "Jev 1.13 Free",
+    endpoints: ["systemone"],
+    modalities: { input: ["text"], output: [] },
+    sunset_at: null,
+    pricing: {
+      input: null,
+      free: true,
+      currency: "IDR",
+      unit: "micro_idr_per_1m_tokens",
+    },
+    ...overrides,
+  };
+}
+
 export function catalogResponse() {
   return Response.json({ data: [model()] });
+}
+
+export function systemOneCatalogResponse() {
+  return Response.json({ data: [systemOneModel()] });
+}
+
+export function systemOneResponse() {
+  return Response.json({
+    model: "jev-1.13-free",
+    answers: {
+      approved: { type: "noul", noul: 0.97 },
+      tone: { type: "choice", choice: "happy", confidence: 1, probabilities: { happy: 1, angry: 0 } },
+      severity: { type: "score", score: 2.96, confidence: 0.96 },
+    },
+    usage: { input_tokens: 82, output_tokens: 48 },
+  });
 }
 
 export function sse(chunks: unknown[]): Response {
