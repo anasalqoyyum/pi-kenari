@@ -1,6 +1,7 @@
 {
   "name": "pi-kenari",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Kenari model provider for Pi, with live model discovery and KENARI_API_KEY authentication",
   "type": "module",
   "keywords": ["pi-package", "kenari", "pi-provider"],
