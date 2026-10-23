@@ -2,10 +2,13 @@ import type { AnyModel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { BASE_URL, discoverModels } from "./src/catalog.ts";
 import { SYSTEM_ONE_API, classify } from "./src/system-one.ts";
+import { registerUsageCommand } from "./src/usage.ts";
 
 const CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 export default function kenari(pi: ExtensionAPI): void {
+  registerUsageCommand(pi);
+
   pi.registerProvider("kenari", {
     name: "Kenari",
     baseUrl: BASE_URL,

@@ -40,6 +40,20 @@ Pi resolves `KENARI_API_KEY` at request time. The extension does not copy it int
 
 Never commit your key. Export it again in a new shell, or load it through your own secret manager. This extension does not load `.env` files.
 
+## Usage
+
+Run `/kenari usage` to read your usage over the last 30 days from Kenari. Choose another window with `/kenari usage today`, `/kenari usage 24h`, `/kenari usage 7d`, or `/kenari usage 30d`. `today` starts at 00:00 UTC. The report shows the resolved window, requests, input and output tokens, cache tokens, and a breakdown by model and billing kind.
+
+In Pi's terminal UI, the command opens a settings-style panel in the editor area. Use Up/Down or Page Up/Page Down to scroll, Home/End to jump, `r` to refresh, and Escape or `q` to close. The panel does not add output to the conversation. Other modes receive a plain-text report.
+
+The panel shows weekly and monthly quota with bars representing the amount remaining. Indicators are green above 70% remaining, yellow from 30% through 70%, and red below 30%. Each window shows the percentage left, remaining Rupiah, budget, a live reset countdown such as `Resets in 2h 15m`, and the UTC reset time. Countdown updates do not make network requests; press `r` to fetch current quota after a reset.
+
+Five-hour quota appears when the plan has that ceiling. Quota windows come from Kenari and do not change with the usage range. A missing ceiling is shown as uncapped; an account without an active plan is identified explicitly.
+
+Amounts are in Rupiah. "Charged to balance" is what Kenari deducted from your balance; "List-price value" includes the catalog value of plan, coupon, free, and BYOK requests, even when the charge is zero. These are Kenari's reported figures, separate from Pi's USD cost estimates.
+
+The command resolves Kenari credentials through Pi at request time and works before model discovery or while another provider is selected. An unrestricted key reads the whole account, including usage outside Pi. A restricted key reads only its own usage and cannot read plan quota; shared keys cannot read either. If one endpoint fails, the report still shows the other endpoint's results. Reading usage and quota is free, times out after 10 seconds, and is unavailable with `--offline` or `PI_OFFLINE=1`.
+
 ## Model discovery
 
 Pi loads the saved catalog at startup and on `/reload` without making network requests. With Kenari credentials configured, it refreshes missing or outdated catalogs in the background, at most once every four hours after a successful refresh.
@@ -120,7 +134,7 @@ Or install the local package for future sessions:
 pi install /absolute/path/to/pi-kenari
 ```
 
-Tests use simulated catalog and chat responses. They do not need an API key or spend Kenari credits. Startup tests exercise Pi's actual extension loader, model runtime, and file-backed catalog store. A live authenticated chat or classifier request requires your own key.
+Tests use simulated catalog, chat, usage, and quota responses. They do not need an API key or spend Kenari credits. Startup and command tests exercise Pi's actual extension loader and model runtime; startup tests also cover the file-backed catalog store. A live authenticated request requires your own key.
 
 ## References
 
@@ -131,3 +145,5 @@ Tests use simulated catalog and chat responses. They do not need an API key or s
 - [Reasoning](https://kenari.id/en/docs/reasoning)
 - [Streaming](https://kenari.id/en/docs/streaming)
 - [System One](https://kenari.id/en/docs/systemone)
+- [Usage](https://kenari.id/en/docs/usage)
+- [Account quota](https://kenari.id/en/docs/account-quota)
